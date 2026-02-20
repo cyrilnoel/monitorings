@@ -1,0 +1,107 @@
+groups:
+  # =========================================================
+  # PARTIE 3 — BACKUPS (Pushgateway)
+  # =========================================================
+  - name: medassist_backups
+    rules:
+      - alert: MedAssistBackupFailed
+        expr: medassist_backup_success{job="mysql_backup"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: backup
+        annotations:
+          summary: "Backup MySQL MedAssist en échec"
+          description: "Le dernier backup a échoué. Vérifier mysqldump_last_error.log dans ./backup/data."
+
+      - alert: MedAssistBackupRPOBreached
+        expr: (time() - medassist_backup_last_success_timestamp{job="mysql_backup"}) > medassist_backup_rpo_target_seconds{job="mysql_backup"}
+        for: 5m
+        labels:
+          severity: critical
+          service: backup
+        annotations:
+          summary: "RPO dépassé (backup trop ancien)"
+          description: "Dernier backup réussi trop ancien (objectif 30 min)."
+
+      - alert: MedAssistBackupSizeAnomaly
+        expr: (medassist_backup_size_bytes{job="mysql_backup"} < 10000) OR (medassist_backup_size_bytes{job="mysql_backup"} > 5000000000)
+        for: 5m
+        labels:
+          severity: warning
+          service: backup
+        annotations:
+          summary: "Anomalie taille backup"
+          description: "Backup trop petit (vide?) ou trop grand (anormal)."
+
+  # =========================================================
+  # PARTIE 4 — HA / PCA-PRA (API x3 + HAProxy + pannes)
+  # =========================================================
+  - name: medassist_ha
+    rules:
+      # --- Dégradation : moins de 3 replicas API UP
+      - alert: P2_APIReplicasDegraded
+        expr: sum(up{job="api"} == 1) < 3
+        for: 30s
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "Dégradation API : un replica est down"
+          description: "Moins de 3 replicas API UP (attendu=3)."
+
+      # --- Panne totale API : 0 replica UP
+      - alert: P1_APIAllDown
+        expr: sum(up{job="api"} == 1) == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "Panne API totale"
+          description: "Aucun replica API UP."
+
+      # --- HAProxy down (scrape)
+      - alert: P1_HAProxyDown
+        expr: up{job="haproxy"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: haproxy
+        annotations:
+          summary: "HAProxy down"
+          description: "Prometheus n’arrive plus à scrapper HAProxy /metrics."
+
+      # --- MySQL down (exporter requis dans prometheus.yml)
+      - alert: P1_MySQLDown
+        expr: up{job="mysql"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: mysql
+        annotations:
+          summary: "MySQL down"
+          description: "Prometheus n’arrive plus à scrapper MySQL (mysqld_exporter)."
+
+      # --- Redis down
+      - alert: P1_RedisDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis down"
+          description: "Prometheus n’arrive plus à scrapper Redis (redis_exporter)."
+
+      # --- (Optionnel) Taux 5xx élevé vu côté HAProxy (si ta métrique existe)
+      # La plupart des exports HAProxy exposent haproxy_frontend_http_responses_total{code="5xx"}
+      - alert: P2_HAProxyHigh5xx
+        expr: sum(rate(haproxy_frontend_http_responses_total{job="haproxy",code=~"5.."}[2m])) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+          service: haproxy
+        annotations:
+          summary: "Taux d’erreurs 5xx élevé (HAProxy)"
+          description: "HAProxy observe un taux d’erreurs 5xx anormal (>0.5 req/s sur 2 min)."

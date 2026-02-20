@@ -1,0 +1,10 @@
+# backups
+backup/data/*.sql
+backup/data/*.gz
+
+# screenshots exports
+screenshots/**/*.png
+screenshots/**/*.jpg
+
+# local
+.DS_Store

@@ -1,0 +1,45 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "webhook_p4"
+  group_by: ["alertname", "service", "severity"]
+  group_wait: 20s
+  group_interval: 2m
+  repeat_interval: 2h
+  routes:
+    - matchers: ['severity="P1"']
+      receiver: "webhook_p1"
+      repeat_interval: 10m
+    - matchers: ['severity="P2"']
+      receiver: "webhook_p2"
+      repeat_interval: 30m
+    - matchers: ['severity="P3"']
+      receiver: "webhook_p3"
+      repeat_interval: 1h
+    - matchers: ['severity="P4"']
+      receiver: "webhook_p4"
+      repeat_interval: 4h
+
+receivers:
+  # TD: on route vers l'API MedAssist (via HAProxy) qui logue les alertes.
+  # Si ton endpoint est différent, change l'URL ici.
+  - name: "webhook_p1"
+    webhook_configs:
+      - url: "http://haproxy:5000/api/webhook/alert?severity=P1"
+        send_resolved: true
+
+  - name: "webhook_p2"
+    webhook_configs:
+      - url: "http://haproxy:5000/api/webhook/alert?severity=P2"
+        send_resolved: true
+
+  - name: "webhook_p3"
+    webhook_configs:
+      - url: "http://haproxy:5000/api/webhook/alert?severity=P3"
+        send_resolved: true
+
+  - name: "webhook_p4"
+    webhook_configs:
+      - url: "http://haproxy:5000/api/webhook/alert?severity=P4"
+        send_resolved: true

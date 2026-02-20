@@ -1,0 +1,145 @@
+{
+  "uid": "medassist-red",
+  "title": "MedAssist - RED (API)",
+  "tags": [
+    "medassist",
+    "red",
+    "api"
+  ],
+  "timezone": "",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Rate (RPS)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(rate(http_requests_total{job=\"api\"}[2m])) or sum(rate(flask_http_request_total{job=\"api\"}[2m])))"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Errors (5xx %)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * ((sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) or sum(rate(flask_http_request_total{job=\"api\",status=~\"5..\"}[5m]))) / (sum(rate(http_requests_total{job=\"api\"}[5m])) or sum(rate(flask_http_request_total{job=\"api\"}[5m]))))"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Duration p95 (s)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"api\"}[5m])) by (le))) or (histogram_quantile(0.95, sum(rate(flask_http_request_duration_seconds_bucket{job=\"api\"}[5m])) by (le))))"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

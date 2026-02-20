@@ -1,0 +1,320 @@
+name: medassist
+
+networks:
+  medassist-network:
+
+volumes:
+  mysql_data:
+  prometheus_data:
+  grafana_data:
+  elastic_data:
+
+# Anti-disque plein: limite la taille des logs Docker par conteneur
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # -------------------------------------------------------------------------
+  # APPLICATION MEDASSIST (stack fournie)
+  # -------------------------------------------------------------------------
+  frontend:
+    image: nginx:1.25-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/index.html:/usr/share/nginx/html/index.html:ro
+    depends_on:
+      haproxy:
+        condition: service_started
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Load balancer (Partie 4)
+  haproxy:
+    image: haproxy:2.9-alpine
+    ports:
+      - "127.0.0.1:15000:5000"   # API via LB
+      - "127.0.0.1:18404:8404"  # HAProxy stats + /metrics (si conflit: change en "8414:8404")
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # API backend (à scaler via: docker compose up -d --scale api=3)
+  api:
+    build: ./api
+    environment:
+      - FLASK_ENV=production
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DB=medassist
+      - MYSQL_USER=medassist
+      - MYSQL_PASSWORD=medassistpass
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    expose:
+      - "5000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/health | grep -q ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass
+      - MYSQL_DATABASE=medassist
+      - MYSQL_USER=medassist
+      - MYSQL_PASSWORD=medassistpass
+    command: ["--default-authentication-plugin=mysql_native_password"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    expose:
+      - "3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -prootpass --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Générateur de trafic (utile pour RED/logs/alertes)
+  traffic:
+    image: curlimages/curl:8.6.0
+    depends_on:
+      haproxy:
+        condition: service_started
+    entrypoint: ["/bin/sh","-lc"]
+    command: |
+      while true; do
+        curl -sS http://haproxy:5000/api/doctors >/dev/null 2>&1 || true;
+        curl -sS http://haproxy:5000/api/consultations >/dev/null 2>&1 || true;
+        curl -sS http://haproxy:5000/api/payment >/dev/null 2>&1 || true;
+        sleep 1;
+      done
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # PARTIE 1 — PROMETHEUS / GRAFANA / CADVISOR / NODE EXPORTER
+  # -------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+       - "127.0.0.1:19090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+      # Anti-disque plein: borne la taille des données Prometheus
+      - "--storage.tsdb.retention.time=2d"
+      - "--storage.tsdb.retention.size=2GB"
+      - "--storage.tsdb.wal-compression"
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    ports:
+     - "127.0.0.1:13000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    expose:
+      - "8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    expose:
+      - "9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+ 
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    environment:
+      - REDIS_ADDR=redis:6379
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # PARTIE 2 — ELK + FILEBEAT
+  # -------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      # Anti-disque/RAM: heap plus petit (suffisant pour le TD)
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    ports:
+        - "127.0.0.1:15601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - XPACK_SECURITY_ENABLED=false
+      # Anti-RAM: limite Node.js
+      - NODE_OPTIONS=--max-old-space-size=1024
+    depends_on:
+      elasticsearch:
+        condition: service_started
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.12.2
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      elasticsearch:
+        condition: service_started
+      kibana:
+        condition: service_started
+    command: ["-e", "--strict.perms=false", "-E", "logging.level=warning"]
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # PARTIE 3 — PUSHGATEWAY + JOB DE BACKUP (à lancer manuellement)
+  # -------------------------------------------------------------------------
+  pushgateway:
+    image: prom/pushgateway:v1.7.0
+    ports:
+      - "9091:9091"
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      pushgateway:
+        condition: service_started
+    volumes:
+      - ./backup/data:/backup/data
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DB=medassist
+      - MYSQL_USER=medassist
+      - MYSQL_PASSWORD=medassistpass
+      - PUSHGATEWAY_URL=http://pushgateway:9091
+      - BACKUP_RPO_SECONDS=1800
+      - BACKUP_RETENTION_FILES=48
+    networks: [medassist-network]
+    restart: "no"
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # PARTIE 5 — ALERTMANAGER
+  # -------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    networks: [medassist-network]
+    restart: unless-stopped
+    logging: *default-logging
